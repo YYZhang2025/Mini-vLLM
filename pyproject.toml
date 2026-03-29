@@ -1,0 +1,20 @@
+[project]
+name = "mini-vllm"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "torch>=2.4.0",
+    "transformers>=4.51.0",
+    "xxhash",
+    "numpy>=2.3.2",
+    "rich",
+]
+
+[project.optional-dependencies]
+gpu = [
+    "triton>=3.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nanovllm*"]

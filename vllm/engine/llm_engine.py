@@ -14,10 +14,11 @@ from vllm.sampling_params import SamplingParams
 
 
 class LLMEngine:
-    def __init__(self, model, **kwargs):
+    def __init__(self, model_name, **kwargs):
         config_fields = {field.name for field in fields(Config)}
         config_kwargs = {k: v for k, v in kwargs.items() if k in config_fields}
-        config = Config(model, **config_kwargs)
+        config = Config(model_name, **config_kwargs)
+
         self.ps = []
         self.events = []
         ctx = mp.get_context("spawn")
@@ -27,9 +28,11 @@ class LLMEngine:
             process.start()
             self.ps.append(process)
             self.events.append(event)
+
         self.model_runner = ModelRunner(config, 0, self.events)
-        self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(config.model_name, use_fast=True)
         config.eos = self.tokenizer.eos_token_id
+
         self.scheduler = Scheduler(config)
         atexit.register(self.exit)
 
@@ -45,53 +48,120 @@ class LLMEngine:
         seq = Sequence(prompt, sampling_params)
         self.scheduler.add(seq)
 
+        return seq.seq_id
+
     def step(self):
         seqs, is_prefill = self.scheduler.schedule()
         token_ids = self.model_runner.call("run", seqs, is_prefill)
+
+        step_tokens = []
+        for seq, token_id in zip(seqs, token_ids):
+            step_tokens.append(
+                {
+                    "seq_id": seq.seq_id,
+                    "token_id": token_id,
+                }
+            )
+
         self.scheduler.postprocess(seqs, token_ids)
-        outputs = [(seq.seq_id, seq.completion_token_ids) for seq in seqs if seq.is_finished]
-        num_tokens = sum(len(seq) for seq in seqs) if is_prefill else -len(seqs)
-        return outputs, num_tokens
+        finished = [(seq.seq_id, seq.completion_token_ids) for seq in seqs if seq.is_finished]
+
+        return {
+            "step_tokens": step_tokens,
+            "finished": finished,
+            "is_prefill": is_prefill,
+        }
 
     def is_finished(self):
         return self.scheduler.is_finished()
+
+    # def generate(
+    #     self,
+    #     prompts: list[str] | list[list[int]],
+    #     sampling_params: SamplingParams | list[SamplingParams],
+    #     use_tqdm: bool = True,
+    # ) -> list[str]:
+    #     if use_tqdm:
+    #         pbar = tqdm(total=len(prompts), desc="Generating", dynamic_ncols=True)
+    #     if not isinstance(sampling_params, list):
+    #         sampling_params = [sampling_params] * len(prompts)
+    #     for prompt, sp in zip(prompts, sampling_params):
+    #         self.add_request(prompt, sp)
+    #     outputs = {}
+    #     prefill_throughput = decode_throughput = 0.0
+    #     while not self.is_finished():
+    #         t = perf_counter()
+    #         output, num_tokens = self.step()
+    #         if use_tqdm:
+    #             if num_tokens > 0:
+    #                 prefill_throughput = num_tokens / (perf_counter() - t)
+    #             else:
+    #                 decode_throughput = -num_tokens / (perf_counter() - t)
+    #             pbar.set_postfix(
+    #                 {
+    #                     "Prefill": f"{int(prefill_throughput)}tok/s",
+    #                     "Decode": f"{int(decode_throughput)}tok/s",
+    #                 }
+    #             )
+    #         for seq_id, token_ids in output:
+    #             outputs[seq_id] = token_ids
+    #             if use_tqdm:
+    #                 pbar.update(1)
+    #     outputs = [outputs[seq_id] for seq_id in sorted(outputs.keys())]
+    #     outputs = [
+    #         {"text": self.tokenizer.decode(token_ids), "token_ids": token_ids} for token_ids in outputs
+    #     ]
+    #     if use_tqdm:
+    #         pbar.close()
+    #     return outputs
 
     def generate(
         self,
         prompts: list[str] | list[list[int]],
         sampling_params: SamplingParams | list[SamplingParams],
-        use_tqdm: bool = True,
-    ) -> list[str]:
-        if use_tqdm:
-            pbar = tqdm(total=len(prompts), desc="Generating", dynamic_ncols=True)
+    ) -> list[dict]:
+        outputs = {}
+
+        for event in self.generate_stream(prompts, sampling_params):
+            if event["type"] == "finished":
+                outputs[event["seq_id"]] = {
+                    "text": event["text"],
+                    "token_ids": event["token_ids"],
+                }
+
+        return [outputs[seq_id] for seq_id in sorted(outputs.keys())]
+
+    def generate_stream(
+        self,
+        prompts: list[str] | list[list[int]],
+        sampling_params: SamplingParams | list[SamplingParams],
+    ):
         if not isinstance(sampling_params, list):
             sampling_params = [sampling_params] * len(prompts)
+
+        seq_ids = []
         for prompt, sp in zip(prompts, sampling_params):
-            self.add_request(prompt, sp)
-        outputs = {}
-        prefill_throughput = decode_throughput = 0.0
+            seq_id = self.add_request(prompt, sp)
+            seq_ids.append(seq_id)
+
         while not self.is_finished():
-            t = perf_counter()
-            output, num_tokens = self.step()
-            if use_tqdm:
-                if num_tokens > 0:
-                    prefill_throughput = num_tokens / (perf_counter() - t)
-                else:
-                    decode_throughput = -num_tokens / (perf_counter() - t)
-                pbar.set_postfix(
-                    {
-                        "Prefill": f"{int(prefill_throughput)}tok/s",
-                        "Decode": f"{int(decode_throughput)}tok/s",
-                    }
-                )
-            for seq_id, token_ids in output:
-                outputs[seq_id] = token_ids
-                if use_tqdm:
-                    pbar.update(1)
-        outputs = [outputs[seq_id] for seq_id in sorted(outputs.keys())]
-        outputs = [
-            {"text": self.tokenizer.decode(token_ids), "token_ids": token_ids} for token_ids in outputs
-        ]
-        if use_tqdm:
-            pbar.close()
-        return outputs
+            out = self.step()
+
+            for item in out["step_tokens"]:
+                seq_id = item["seq_id"]
+                token_id = item["token_id"]
+
+                yield {
+                    "type": "token",
+                    "seq_id": seq_id,
+                    "text": self.tokenizer.decode([token_id]),
+                    "is_prefill": out["is_prefill"],
+                }
+
+            for seq_id, token_ids in out["finished"]:
+                yield {
+                    "type": "finished",
+                    "seq_id": seq_id,
+                    "text": self.tokenizer.decode(token_ids),
+                    "token_ids": token_ids,
+                }

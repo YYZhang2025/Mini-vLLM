@@ -8,7 +8,7 @@ import torch.distributed as dist
 
 from vllm.config import Config
 from vllm.engine.sequence import Sequence
-from vllm.models.qwen3 import Qwen3Model, load_model
+from vllm.models.qwen3 import Qwen3ForCausalLM, load_model
 from vllm.models.sampler import Sampler
 from vllm.utils.context import get_context, reset_context, set_context
 
@@ -32,7 +32,6 @@ class ModelRunner:
 
         dist.init_process_group(backend="nccl", rank=rank, world_size=self.world_size)
         torch.cuda.set_device(rank)
-
         default_dtype = torch.get_default_dtype()
         torch.set_default_dtype(hf_config.torch_dtype)
         torch.set_default_device("cuda")
@@ -144,6 +143,14 @@ class ModelRunner:
         )
 
         assert config.num_kvcache_blocks > 0
+
+        # Allocate a large contiguous memory for KV cache
+        # 0: KV cache
+        # 1: Layer
+        # 2: Block id
+        # 3: Token id in block
+        # 4: Heads
+        # 5: Head dim
         self.kv_cache = torch.empty(
             2, hf_config.num_hidden_layers, config.num_kvcache_blocks, self.block_size, num_kv_heads, head_dim
         )
@@ -170,7 +177,7 @@ class ModelRunner:
         max_seqlen_q = 0
         max_seqlen_k = 0
 
-        slot_mapping = []
+        slot_mapping = []  # mapping from token position to slot id in KV cache, used for updating block tables after prefill
         block_tables = None
 
         for seq in seqs:
@@ -186,6 +193,7 @@ class ModelRunner:
             cu_seqlens_k.append(cu_seqlens_k[-1] + seqlen_k)
             max_seqlen_q = max(seqlen_q, max_seqlen_q)
             max_seqlen_k = max(seqlen_k, max_seqlen_k)
+
             if not seq.block_table:  # warmup
                 continue
 
@@ -273,12 +281,15 @@ class ModelRunner:
         hf_config = config.hf_config
         max_bs = min(self.config.max_num_seqs, 512)
         max_num_blocks = (config.max_model_len + self.block_size - 1) // self.block_size
+
         input_ids = torch.zeros(max_bs, dtype=torch.int64)
         positions = torch.zeros(max_bs, dtype=torch.int64)
         slot_mapping = torch.zeros(max_bs, dtype=torch.int32)
         context_lens = torch.zeros(max_bs, dtype=torch.int32)
         block_tables = torch.zeros(max_bs, max_num_blocks, dtype=torch.int32)
         outputs = torch.zeros(max_bs, hf_config.hidden_size)
+
+        # Prepare CUDA Graphs for different batch sizes.
         self.graph_bs = [1, 2, 4, 8] + list(range(16, max_bs + 1, 16))
         self.graphs = {}
         self.graph_pool = None

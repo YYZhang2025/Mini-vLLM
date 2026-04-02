@@ -1,20 +1,54 @@
 [project]
 name = "mini-vllm"
 version = "0.1.0"
-requires-python = ">=3.12"
+requires-python = "==3.12.*"
 dependencies = [
-    "torch>=2.4.0",
-    "transformers>=4.51.0",
+    "torch==2.9.1",
+    "transformers>=4.57.3",
     "xxhash",
-    "numpy>=2.3.2",
     "rich",
 ]
 
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu128", extra = "gpu" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+
+
+
+
 [project.optional-dependencies]
+cpu = [
+    "torch==2.9.1",
+]
 gpu = [
+    "torch==2.9.1",
     "triton>=3.0.0",
 ]
 
+
+[tool.uv]
+conflicts = [
+    [
+        { extra = "cpu" },
+        { extra = "gpu" },
+    ],
+]
+
+
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["nanovllm*"]
+include = ["vllm*"]

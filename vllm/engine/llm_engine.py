@@ -12,10 +12,10 @@ from vllm.sampling_params import SamplingParams
 
 
 class LLMEngine:
-    def __init__(self, model_name, **kwargs):
+    def __init__(self, model, **kwargs):
         config_fields = {field.name for field in fields(Config)}
         config_kwargs = {k: v for k, v in kwargs.items() if k in config_fields}
-        config = Config(model_name, **config_kwargs)
+        config = Config(model, **config_kwargs)
 
         self.ps = []
         self.events = []
@@ -30,7 +30,7 @@ class LLMEngine:
             self.events.append(event)
 
         self.model_runner = ModelRunner(config, 0, self.events)
-        self.tokenizer = AutoTokenizer.from_pretrained(config.model_name, use_fast=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True)
         config.eos = self.tokenizer.eos_token_id
 
         self.scheduler = Scheduler(config)
@@ -64,6 +64,7 @@ class LLMEngine:
     def step(self):
         seqs, is_prefill = self.scheduler.schedule()
         token_ids = self.model_runner.call("run", seqs, is_prefill)
+        self.scheduler.postprocess(seqs, token_ids)
 
         step_tokens = []
         for seq, token_id in zip(seqs, token_ids):
@@ -74,7 +75,6 @@ class LLMEngine:
                 }
             )
 
-        self.scheduler.postprocess(seqs, token_ids)
         finished = [(seq.seq_id, seq.completion_token_ids) for seq in seqs if seq.is_finished]
 
         return {

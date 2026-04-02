@@ -16,7 +16,11 @@ class Scheduler:
         self.running: deque[Sequence] = deque()
 
     def is_finished(self):
-        return self.waiting is None and self.running is None
+        return not self.waiting and not self.running
+
+    def add(self, seq: Sequence):
+        assert seq.status == SequenceStatus.WAITING
+        self.waiting.append(seq)
 
     def schedule(self) -> tuple[list[Sequence], bool]:
         # Prefill stage

@@ -7,7 +7,7 @@ from vllm.sampling_params import SamplingParams
 
 class SequenceStatus(Enum):
     WAITING = auto()
-    READY = auto()
+    RUNNING = auto()
     FINISHED = auto()
 
 

@@ -30,10 +30,12 @@ class ModelRunner:
         self.block_size = config.kvcache_block_size
         self.event = event
 
-        dist.init_process_group(backend="nccl", rank=rank, world_size=self.world_size)
+        dist.init_process_group(
+            backend="nccl", init_method="tcp://127.0.0.1:29500", rank=rank, world_size=self.world_size
+        )
         torch.cuda.set_device(rank)
         default_dtype = torch.get_default_dtype()
-        torch.set_default_dtype(hf_config.torch_dtype)
+        torch.set_default_dtype(hf_config.dtype)
         torch.set_default_device("cuda")
 
         self.model = Qwen3ForCausalLM(hf_config)
@@ -136,7 +138,7 @@ class ModelRunner:
             * self.block_size
             * num_kv_heads
             * head_dim
-            * hf_config.torch_dtype.itemsize
+            * hf_config.dtype.itemsize
         )
         config.num_kvcache_blocks = (
             int(total * config.gpu_memory_utilization - used - peak + current) // block_bytes

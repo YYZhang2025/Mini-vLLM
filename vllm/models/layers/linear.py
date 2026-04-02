@@ -22,7 +22,7 @@ class LinearBase(nn.Module):
         super().__init__()
 
         self.tp_dim = tp_dim
-        self.tp_rank, self.tp_world_size = get_dist_info() if tp_dim is not None else (0, 1)
+        self.tp_rank, self.tp_size = get_dist_info() if tp_dim is not None else (0, 1)
 
         self.weight = nn.Parameter(torch.empty(output_size, input_size))
         self.weight.weight_loader = self.weight_loader

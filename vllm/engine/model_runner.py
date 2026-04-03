@@ -59,15 +59,11 @@ class ModelRunner:
 
         if self.world_size > 1:
             if rank == 0:
-                self.shm = SharedMemory(
-                    name=f"vllm_model_runner_shm_{os.getpid()}",
-                    create=True,
-                    size=4 + config.max_num_seqs * config.max_model_len * 4,
-                )
+                self.shm = SharedMemory(name="vllm_model_runner_shm", create=True, size=2**20)
                 dist.barrier()
             else:
                 dist.barrier()
-                self.shm = SharedMemory(name=f"vllm_model_runner_shm_{os.getpid()}", create=False)
+                self.shm = SharedMemory(name="vllm_model_runner_shm", create=False)
                 self.loop()
 
     def exit(self):

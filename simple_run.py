@@ -38,17 +38,25 @@ def main():
     )
     sampling_params = SamplingParams(
         temperature=0.7,
-        max_tokens=128,
+        max_tokens=2048,
     )
 
     print("Prompt:", prompt)
     print("\nOutput:\n", end="")
 
+    import time
+
+    e = next(engine.generate_stream([prompt], sampling_params))
+    print(f"First token: {e['delta_text']}, time taken: {time.time() - t0:.2f} seconds")
+
+    t0 = time.time()
     for event in engine.generate_stream([prompt], sampling_params):
         if event["type"] == "token":
             print(event["delta_text"], end="", flush=True)
         elif event["type"] == "finished":
             print("\n")
+    t2 = time.time()
+    print(f"Time taken: {t2 - t0:.2f} seconds")
 
 
 if __name__ == "__main__":

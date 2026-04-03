@@ -27,6 +27,7 @@ class Qwen3Attention(nn.Module):
         qkv_bias: bool = False,
         rope_theta: float = 10000,
         rope_scaling: tuple | None = None,
+        block_size: int = 256,
     ) -> None:
         super().__init__()
         tp_size = dist.get_world_size()
@@ -62,13 +63,10 @@ class Qwen3Attention(nn.Module):
             rotary_dim=self.head_dim,
             max_position=max_position,
             base=rope_theta,
-            rope_scaling=rope_scaling,
+            rope_scaling=None,
         )
         self.attn = Attention(
-            self.num_heads,
-            self.head_dim,
-            self.scaling,
-            self.num_kv_heads,
+            self.num_heads, self.head_dim, self.scaling, self.num_kv_heads, block_size=block_size
         )
         if not self.qkv_bias:
             self.q_norm = RMSNorm(self.head_dim, eps=rms_norm_eps)

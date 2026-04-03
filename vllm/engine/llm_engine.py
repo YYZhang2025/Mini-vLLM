@@ -15,7 +15,7 @@ class LLMEngine:
     def __init__(self, model, **kwargs):
         config_fields = {field.name for field in fields(Config)}
         config_kwargs = {k: v for k, v in kwargs.items() if k in config_fields}
-        config = Config(model, **config_kwargs)
+        config = Config(model=model, **config_kwargs)
 
         self.ps = []
         self.events = []
@@ -59,7 +59,11 @@ class LLMEngine:
             prompt = self.tokenizer.encode(prompt)
         seq = Sequence(prompt, sampling_params)
         self.scheduler.add(seq)
+
         return seq.seq_id
+
+    def is_finished(self):
+        return self.scheduler.is_finished()
 
     def step(self):
         seqs, is_prefill = self.scheduler.schedule()
@@ -72,6 +76,8 @@ class LLMEngine:
                 {
                     "seq_id": seq.seq_id,
                     "token_id": token_id,
+                    "completion_token_ids": seq.completion_token_ids[:],
+                    "is_finished": seq.is_finished,
                 }
             )
 
@@ -82,9 +88,6 @@ class LLMEngine:
             "finished": finished,
             "is_prefill": is_prefill,
         }
-
-    def is_finished(self):
-        return self.scheduler.is_finished()
 
     def generate(
         self,
@@ -120,12 +123,11 @@ class LLMEngine:
             sampling_params = [sampling_params] * len(prompts)
 
         prompt_seq_ids = []
-        token_buffers = {}
+        finished_set = set()
 
         for prompt, sp in zip(prompts, sampling_params):
             seq_id = self.add_request(prompt, sp)
             prompt_seq_ids.append(seq_id)
-            token_buffers[seq_id] = []
 
         while not self.is_finished():
             out = self.step()
@@ -133,23 +135,24 @@ class LLMEngine:
             for item in out["step_tokens"]:
                 seq_id = item["seq_id"]
                 token_id = item["token_id"]
-
-                token_buffers[seq_id].append(token_id)
+                completion_token_ids = item["completion_token_ids"]
 
                 yield {
                     "type": "token",
                     "seq_id": seq_id,
                     "token_id": token_id,
                     "delta_text": self.tokenizer.decode([token_id], skip_special_tokens=False),
-                    "full_text": self.tokenizer.decode(token_buffers[seq_id], skip_special_tokens=True),
-                    "token_ids": token_buffers[seq_id][:],
+                    "full_text": self.tokenizer.decode(completion_token_ids, skip_special_tokens=True),
+                    "token_ids": completion_token_ids,
                     "is_prefill": out["is_prefill"],
                 }
 
             for seq_id, token_ids in out["finished"]:
-                yield {
-                    "type": "finished",
-                    "seq_id": seq_id,
-                    "text": self.tokenizer.decode(token_ids, skip_special_tokens=True),
-                    "token_ids": token_ids,
-                }
+                if seq_id not in finished_set:
+                    finished_set.add(seq_id)
+                    yield {
+                        "type": "finished",
+                        "seq_id": seq_id,
+                        "text": self.tokenizer.decode(token_ids, skip_special_tokens=True),
+                        "token_ids": token_ids,
+                    }

@@ -24,7 +24,7 @@ def main():
             }
         ],
         tokenize=False,
-        add_genration_prompt=True,
+        add_generation_prompt=True,
     )
     sampling_params = SamplingParams(
         temperature=0.7,
@@ -40,6 +40,8 @@ def main():
         elif event["type"] == "finished":
             print("\n")
 
+    print("Batch Generation Finished.")
+    print(engine.generate([prompt], sampling_params))
     engine.exit()
 
 

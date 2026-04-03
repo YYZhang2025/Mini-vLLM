@@ -47,8 +47,6 @@ def main():
     import time
 
     t0 = time.time()
-    e = next(engine.generate_stream([prompt], sampling_params))
-    print(f"First token: {e['delta_text']}, time taken: {time.time() - t0:.2f} seconds")
 
     for event in engine.generate_stream([prompt], sampling_params):
         if event["type"] == "token":

@@ -16,7 +16,7 @@ def get_tensor_parallel_size():
 
 
 def main():
-    path = os.path.expanduser("~/model/Qwen3-0.6B/")
+    path = os.path.expanduser("~/model/Qwen3-32B/")
     tokenizer = AutoTokenizer.from_pretrained(path, use_fast=True)
     tensor_parallel_size = get_tensor_parallel_size()
     engine = LLMEngine(

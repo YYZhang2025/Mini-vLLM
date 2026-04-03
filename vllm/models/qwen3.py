@@ -238,3 +238,140 @@ def load_model(model: nn.Module, path: str):
                     param = model.get_parameter(weight_name)
                     weight_loader = getattr(param, "weight_loader", default_weight_loader)
                     weight_loader(param, f.get_tensor(weight_name))
+
+
+if __name__ == "__main__":
+    import os
+
+    import torch
+    import torch.distributed as dist
+    from transformers import AutoTokenizer, Qwen3Config
+
+    # --------------------------------------------------
+    # 1. init distributed for tensor-parallel modules
+    # --------------------------------------------------
+    if not dist.is_initialized():
+        os.environ.setdefault("RANK", "0")
+        os.environ.setdefault("WORLD_SIZE", "1")
+        os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
+        os.environ.setdefault("MASTER_PORT", "29500")
+
+        backend = "nccl" if torch.cuda.is_available() else "gloo"
+        dist.init_process_group(backend=backend, rank=0, world_size=1)
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if device == "cuda":
+        torch.cuda.set_device(0)
+
+    # --------------------------------------------------
+    # 2. load tokenizer / config / model
+    # --------------------------------------------------
+    path = os.path.expanduser("~/model/Qwen3-0.6B/")
+
+    tokenizer = AutoTokenizer.from_pretrained(path, use_fast=True)
+    hf_config = Qwen3Config.from_pretrained(path)
+
+    model = Qwen3ForCausalLM(hf_config).to(device)
+    model.eval()
+
+    print("Model loaded.")
+    print(f"Device: {device}")
+
+    # Optional: load local safetensors weights
+    print("Loading weights...")
+    load_model(model, path)
+    print("Weights loaded.")
+
+    # --------------------------------------------------
+    # 3. build chat prompt
+    # --------------------------------------------------
+    prompt = "What is the Transformer?"
+    prompt = tokenizer.apply_chat_template(
+        [
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+
+    print("\nPrompt:")
+    print(prompt)
+
+    # --------------------------------------------------
+    # 4. tokenize
+    # --------------------------------------------------
+    enc = tokenizer(prompt, return_tensors="pt")
+    input_ids = enc["input_ids"].to(device)  # [B, T]
+    attention_mask = enc.get("attention_mask", None)
+    if attention_mask is not None:
+        attention_mask = attention_mask.to(device)
+
+    batch_size, seq_len = input_ids.shape
+    positions = torch.arange(seq_len, device=device, dtype=torch.long)
+    positions = positions.unsqueeze(0).expand(batch_size, -1)  # [B, T]
+
+    print(f"\ninput_ids shape: {tuple(input_ids.shape)}")
+    print(f"positions shape: {tuple(positions.shape)}")
+
+    # --------------------------------------------------
+    # 5. forward pass
+    # --------------------------------------------------
+    with torch.no_grad():
+        hidden_states = model(input_ids, positions)  # [B, T, H]
+        logits = model.compute_logits(hidden_states)  # [B, T, V]
+
+    print(f"hidden_states shape: {tuple(hidden_states.shape)}")
+    print(f"logits shape: {tuple(logits.shape)}")
+
+    assert hidden_states.shape == (batch_size, seq_len, hf_config.hidden_size)
+    assert logits.shape == (batch_size, seq_len, hf_config.vocab_size)
+    assert torch.isfinite(hidden_states).all()
+    assert torch.isfinite(logits).all()
+
+    # --------------------------------------------------
+    # 6. greedy next-token prediction
+    # --------------------------------------------------
+    next_token_id = logits[:, -1, :].argmax(dim=-1)  # [B]
+    next_token_text = tokenizer.decode(next_token_id.tolist(), skip_special_tokens=False)
+
+    print("\nGreedy next token:")
+    print("next_token_id:", next_token_id.tolist())
+    print("next_token_text:", repr(next_token_text))
+
+    # --------------------------------------------------
+    # 7. optional: one-step append and decode
+    # --------------------------------------------------
+    # --------------------------------------------------
+    # 7b. naive greedy decode
+    # --------------------------------------------------
+    max_new_tokens = 30
+    generated = input_ids.clone()
+
+    for _ in range(max_new_tokens):
+        cur_seq_len = generated.shape[1]
+        cur_positions = torch.arange(cur_seq_len, device=device, dtype=torch.long)
+        cur_positions = cur_positions.unsqueeze(0).expand(generated.shape[0], -1)
+
+        with torch.no_grad():
+            hidden_states = model(generated, cur_positions)
+            logits = model.compute_logits(hidden_states)
+
+        next_token_id = logits[:, -1, :].argmax(dim=-1, keepdim=True)  # [B, 1]
+        generated = torch.cat([generated, next_token_id], dim=1)
+
+        # stop if eos
+        if tokenizer.eos_token_id is not None:
+            if torch.all(next_token_id.squeeze(1) == tokenizer.eos_token_id):
+                break
+
+    print("\nNaive greedy generation:")
+    print(tokenizer.decode(generated[0].tolist(), skip_special_tokens=False))
+
+    # --------------------------------------------------
+    # 8. cleanup
+    # --------------------------------------------------
+    if dist.is_initialized():
+        dist.destroy_process_group()

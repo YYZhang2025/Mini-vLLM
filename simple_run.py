@@ -40,10 +40,6 @@ def main():
         elif event["type"] == "finished":
             print("\n")
 
-    print("Batch Generation Finished.")
-    print(engine.generate([prompt], sampling_params))
-    engine.exit()
-
 
 if __name__ == "__main__":
     main()
